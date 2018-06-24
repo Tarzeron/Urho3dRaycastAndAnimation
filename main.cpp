@@ -32,6 +32,7 @@
 #include <Urho3D/Math/BoundingBox.h>
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/AnimationController.h>
+#include <Urho3D/Graphics/VertexBuffer.h>
 
 using namespace Urho3D;
 /**
@@ -205,9 +206,105 @@ public:
 			octree_->Raycast(query);
 			Color lineColor=Color::YELLOW;
 			if (results.Size())
+			{
 				lineColor=Color::RED;
+				for(int i=0;i<results.Size();i++)
+				{
+					if(results.At(i).drawable_->GetTypeName()!="AnimatedModel")
+						break;
+					if(!TestRaycastOnNodeWithAnimatedModel(ray,results.At(i).node_))
+					{
+						lineColor=Color::GRAY;
+						break;
+					}
+				}
+			}
 			dr->AddLine(from, to, lineColor, true);
 		}
+    }
+
+    bool TestRaycastOnNodeWithAnimatedModel(Ray ray, Node* node)
+    {
+    	AnimatedModel* animatedModel = node->GetComponent<AnimatedModel>();
+    	Model* model = animatedModel->GetModel();
+    	Skeleton& skeletion = animatedModel->GetSkeleton();
+        Ray localRay=ray;
+        localRay.origin_-=node->GetWorldPosition();
+        Vector3 outNormal;
+
+        if(skeletion.GetNumBones()==0)
+        	return true;
+
+        Vector<Matrix3x4> matricesOfBones;
+        matricesOfBones.Reserve(skeletion.GetNumBones());
+        for(int s=0;s<skeletion.GetNumBones();s++)
+        {
+        	Bone* bone = skeletion.GetBone(s);
+        	Node* boneNode = node->GetChild(bone->name_,true);
+        	Matrix3x4 tarnsformOfBone = boneNode->GetWorldTransform();
+        	Quaternion rot;
+        	Vector3 pos,scale;
+        	tarnsformOfBone.Decompose(pos,rot,scale);
+        	pos=pos-node->GetWorldPosition();
+        	tarnsformOfBone=Matrix3x4(pos,rot,scale);
+        	matricesOfBones.Push(tarnsformOfBone*bone->offsetMatrix_);
+        }
+
+        int numberOfBones = matricesOfBones.Size();
+
+        for(int g=0;g<model->GetNumGeometries();g++)
+        {
+        	Geometry* geometry = model->GetGeometry(g,0);
+
+        	if (geometry)
+    		{
+    		    const unsigned char* dataOfVertices;
+    		    const unsigned char* dataOnIndexes;
+    		    unsigned sizeOfVertices;
+    		    unsigned sizeOfIndexes;
+    		    const PODVector<VertexElement>* elements;
+
+    		    geometry->GetRawData(dataOfVertices, sizeOfVertices, dataOnIndexes, sizeOfIndexes, elements);
+
+    		    unsigned char* dataOfVerticesAnimated = new unsigned char[sizeOfVertices*geometry->GetVertexCount()];
+    		    memcpy(dataOfVerticesAnimated,dataOfVertices,sizeOfVertices*geometry->GetVertexCount());
+
+    		    unsigned weightsOffset = VertexBuffer::GetElementOffset(*elements, TYPE_VECTOR4, SEM_BLENDWEIGHTS);
+    		    unsigned indicesOffset = VertexBuffer::GetElementOffset(*elements, TYPE_UBYTE4, SEM_BLENDINDICES);
+    		    int vc=geometry->GetVertexCount();
+    		    for(int v=0;v<vc;v++)
+    		    {
+    		    	float* ptrPos = (float*) (dataOfVerticesAnimated+v*sizeOfVertices);
+    		    	float* ptrWeights = (float*) (dataOfVerticesAnimated+v*sizeOfVertices+weightsOffset);
+    		    	unsigned char* ptrIndices = (unsigned char*) (dataOfVerticesAnimated+v*sizeOfVertices+indicesOffset);
+    		    	Vector3 baseVertex(ptrPos);
+    		    	Vector3 animatedVertex;
+    		    	for(int i=0;i<4;i++)
+    		    	{
+    		    		float w=ptrWeights[i];
+    		    		unsigned char ind=ptrIndices[i];
+    		    		if(ind<0 || ind>=numberOfBones)
+    		    			continue;
+    		    		if(w<=0.0f || w>1.0f)
+    		    			continue;
+    		    		animatedVertex=animatedVertex+matricesOfBones[ind]*w*(baseVertex);
+    		    	}
+    		    	ptrPos[0]=animatedVertex.x_;
+    		    	ptrPos[1]=animatedVertex.y_;
+    		    	ptrPos[2]=animatedVertex.z_;
+    		    }
+
+    			float distanceToGeometry = localRay.HitDistance(dataOfVerticesAnimated, sizeOfVertices, dataOnIndexes, sizeOfIndexes,
+    					geometry->GetIndexStart(), geometry->GetIndexCount(), &outNormal, NULL, 0);
+
+    			delete [] dataOfVerticesAnimated;
+
+    			if (distanceToGeometry < M_INFINITY)
+    		    	return true;
+    		}
+        }
+
+    	return false;
     }
 };
 
